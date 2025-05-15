@@ -29,32 +29,26 @@ static bool load(const char *cmdline, void (**eip)(void), void **esp);
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
    thread id, or TID_ERROR if the thread cannot be created. */
+
 tid_t process_execute(const char *file_name) {
     char *fn_copy;
     tid_t tid;
+    
     sema_init(&temporary, 0);
     /* Make a copy of FILE_NAME.
-       Otherwise there's a race between the caller and load(). */
+    Otherwise there's a race between the caller and load(). */
     fn_copy = palloc_get_page(0);
     if (fn_copy == NULL)
         return TID_ERROR;
-    
     strlcpy(fn_copy, file_name, PGSIZE);
-    for(int i = 0; file_name[i] != '\0'; i++) if(file_name[i] == ' ') argc++;
-    argv = malloc(sizeof(char*) * argc);
+    char buf[256];
+    strlcpy(buf, file_name, sizeof(buf));
 
-    char* rest = file_name;
-    char* token;
-    int c = 0;
-    while ((token = strtok_r(fn_copy, " ", &rest))) {
-        strlcpy(argv[c], token, PGSIZE);
-        c++;
-    }
+    char *saveptr;
+    char *file_name_ = strtok_r(buf, " ", &saveptr);
 
-
-    
     /* Create a new thread to execute FILE_NAME. */
-    tid = thread_create(file_name, PRI_DEFAULT, start_process, fn_copy);
+    tid = thread_create(file_name_, PRI_DEFAULT, start_process, fn_copy);
     if (tid == TID_ERROR)
         palloc_free_page(fn_copy);
     return tid;
@@ -73,7 +67,7 @@ static void start_process(void *file_name_) {
     if_.cs = SEL_UCSEG;
     if_.eflags = FLAG_IF | FLAG_MBS;
     success = load(file_name, &if_.eip, &if_.esp);
-    if_.esp -= 32;
+    //if_.esp -= 16;
 
     /* If load failed, quit. */
     palloc_free_page(file_name);
@@ -202,7 +196,7 @@ struct Elf32_Phdr {
 #define PF_W 2 /* Writable. */
 #define PF_R 4 /* Readable. */
 
-static bool setup_stack(void **esp);
+static bool setup_stack(void **esp, const char *file_name_);
 static bool validate_segment(const struct Elf32_Phdr *, struct file *);
 static bool load_segment(struct file *file, off_t ofs, uint8_t *upage,
                          uint32_t read_bytes, uint32_t zero_bytes,
@@ -219,6 +213,12 @@ bool load(const char *file_name, void (**eip)(void), void **esp) {
     off_t file_ofs;
     bool success = false;
     int i;
+    const char* args = file_name;
+    char buf[256];
+    strlcpy(buf, file_name, sizeof(buf));
+
+    char *saveptr;
+    char *file_name_ = strtok_r(buf, " ", &saveptr);
 
     /* Allocate and activate page directory. */
     t->pagedir = pagedir_create();
@@ -227,9 +227,9 @@ bool load(const char *file_name, void (**eip)(void), void **esp) {
     process_activate();
 
     /* Open executable file. */
-    file = filesys_open(file_name);
+    file = filesys_open(file_name_);
     if (file == NULL) {
-        printf("load: %s: open failed\n", file_name);
+        printf("load: %s: open failed\n", file_name_);
         goto done;
     }
 
@@ -238,7 +238,7 @@ bool load(const char *file_name, void (**eip)(void), void **esp) {
         memcmp(ehdr.e_ident, "\177ELF\1\1\1", 7) || ehdr.e_type != 2 ||
         ehdr.e_machine != 3 || ehdr.e_version != 1 ||
         ehdr.e_phentsize != sizeof(struct Elf32_Phdr) || ehdr.e_phnum > 1024) {
-        printf("load: %s: error loading executable\n", file_name);
+        printf("load: %s: error loading executable\n", file_name_);
         goto done;
     }
 
@@ -295,7 +295,7 @@ bool load(const char *file_name, void (**eip)(void), void **esp) {
     }
 
     /* Set up stack. */
-    if (!setup_stack(esp))
+    if (!setup_stack(esp, args))
         goto done;
 
     /* Start address. */
@@ -413,7 +413,8 @@ static bool load_segment(struct file *file, off_t ofs, uint8_t *upage,
 
 /* Create a minimal stack by mapping a zeroed page at the top of
    user virtual memory. */
-static bool setup_stack(void **esp) {
+const int MAX_ARG_LEN = 2048;
+static bool setup_stack(void **esp, const char* file_name_) {
     uint8_t *kpage;
     bool success = false;
 
@@ -421,7 +422,77 @@ static bool setup_stack(void **esp) {
     if (kpage != NULL) {
         success = install_page(((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
         if (success)
+        {
             *esp = PHYS_BASE;
+            uint8_t *stack_ptr = (uint8_t*)(*esp);
+            char file_name[strlen(file_name_) + 1];
+            strlcpy(file_name, file_name_, MAX_ARG_LEN);
+
+            int argc = 0;
+            bool in_word = false;
+
+            for (int i = 0; file_name[i] != '\0'; i++)
+            {
+                if (file_name[i] != ' ') {
+                    if (!in_word) {
+                        argc++;
+                        in_word = true;
+                    }
+                } else {
+                    in_word = false;
+                }
+            }
+            char* argv_ptrs[argc];
+            
+            char *saveptr;
+            char *token = strtok_r(file_name, " ", &saveptr);
+            int i = 0;
+            int c = 0;
+
+            while (token) {
+                size_t token_len = strlen(token) + 1;
+                stack_ptr -= token_len;
+                strlcpy((char*)stack_ptr, token, token_len);
+                argv_ptrs[i] = (char*)stack_ptr;
+                c += token_len;
+                i++;
+                token = strtok_r(NULL, " ", &saveptr);
+            }
+
+            // align stack
+            int leftover = c % 16;
+            stack_ptr -= (16 - leftover);
+
+            // add padding
+            // if argc = 3 then we have 3 ptrs + argc which is 4 bytes --> aligned
+            // if argc = 4 then we need to store 5 4-byte words
+            // we then need 12 bytes of padding, since 20 bytes mod 16 is 4 and 16-4 is 12
+            // also have to acocunt for remaining 8 bytes of padding
+            int arg_space = sizeof(char*) * argc + sizeof(int) + 4; // writing like this for clarity
+            leftover = arg_space % 16;
+            stack_ptr -= (16 - leftover);
+
+            // push argv contents
+            for(i = argc-1; i >= 0; i--)
+            {
+                stack_ptr -= sizeof(char*);
+                memcpy(stack_ptr, &argv_ptrs[i], sizeof(char*));
+            }
+
+            // store argv BASE ptr
+            char **argv_start = (char**)stack_ptr;
+            stack_ptr -= sizeof(char**);
+            memcpy(stack_ptr, &argv_start, sizeof(char**));
+
+            // push argc onto the stack
+            stack_ptr -= sizeof(int);
+            *((int*)stack_ptr) = argc;
+
+            // extra mandated (?) padding
+            stack_ptr -= 4;
+            
+            *esp = stack_ptr;
+        }
         else
             palloc_free_page(kpage);
     }
