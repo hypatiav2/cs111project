@@ -32,15 +32,27 @@ static bool load(const char *cmdline, void (**eip)(void), void **esp);
 tid_t process_execute(const char *file_name) {
     char *fn_copy;
     tid_t tid;
-
     sema_init(&temporary, 0);
     /* Make a copy of FILE_NAME.
        Otherwise there's a race between the caller and load(). */
     fn_copy = palloc_get_page(0);
     if (fn_copy == NULL)
         return TID_ERROR;
+    
     strlcpy(fn_copy, file_name, PGSIZE);
+    for(int i = 0; file_name[i] != '\0'; i++) if(file_name[i] == ' ') argc++;
+    argv = malloc(sizeof(char*) * argc);
 
+    char* rest = file_name;
+    char* token;
+    int c = 0;
+    while ((token = strtok_r(fn_copy, " ", &rest))) {
+        strlcpy(argv[c], token, PGSIZE);
+        c++;
+    }
+
+
+    
     /* Create a new thread to execute FILE_NAME. */
     tid = thread_create(file_name, PRI_DEFAULT, start_process, fn_copy);
     if (tid == TID_ERROR)
@@ -61,6 +73,7 @@ static void start_process(void *file_name_) {
     if_.cs = SEL_UCSEG;
     if_.eflags = FLAG_IF | FLAG_MBS;
     success = load(file_name, &if_.eip, &if_.esp);
+    if_.esp -= 32;
 
     /* If load failed, quit. */
     palloc_free_page(file_name);

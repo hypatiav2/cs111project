@@ -32,23 +32,74 @@
 #include "word_count.h"
 #include "word_helpers.h"
 
-/*
- * main - handle command line, spawning one thread per file.
- */
+typedef struct {
+    word_count_list_t *word_counts;
+    FILE *infile;
+} thread_arg_t;
+
+void *count_words_thread(void *arg) {
+    thread_arg_t *targ = (thread_arg_t *)arg;
+    count_words(targ->word_counts, targ->infile);
+    fclose(targ->infile);  
+    free(targ); 
+    return NULL;
+}
+
 int main(int argc, char *argv[]) {
     /* Create the empty data structure. */
     word_count_list_t word_counts;
     init_words(&word_counts);
 
+    pthread_t *threads = NULL;
+    int thread_count = 0;
+
     if (argc <= 1) {
         /* Process stdin in a single thread. */
         count_words(&word_counts, stdin);
     } else {
-        /* TODO */
+        
+        int i;
+        for (i = 1; i < argc; i++) {
+            FILE *infile = fopen(argv[i], "r");
+            if (infile == NULL) {
+                perror("fopen");
+                return 1;
+            }
+
+            
+            thread_arg_t *arg = malloc(sizeof(thread_arg_t));
+            if (arg == NULL) {
+                perror("malloc");
+                return 1;
+            }
+            arg->word_counts = &word_counts;
+            arg->infile = infile;
+
+            
+            threads = realloc(threads, sizeof(pthread_t) * (thread_count + 1));
+            if (pthread_create(&threads[thread_count], NULL, count_words_thread, arg) != 0) {
+                perror("pthread_create");
+                return 1;
+            }
+
+            thread_count++;
+        }
+
+        // wait for threads to finish
+        for (int i = 0; i < thread_count; i++) {
+            if (pthread_join(threads[i], NULL) != 0) {
+                perror("pthread_join");
+                return 1;
+            }
+        }
     }
 
     /* Output final result of all threads' work. */
     wordcount_sort(&word_counts, less_count);
     fprint_words(&word_counts, stdout);
+
+    /* Free thread resources */
+    free(threads);
+
     return 0;
 }

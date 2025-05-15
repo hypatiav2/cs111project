@@ -63,6 +63,57 @@ int main(int argc, char *argv[]) {
         count_words(&word_counts, stdin);
     } else {
         /* TODO */
+        int num_files = argc - 1;
+        int pipes[num_files][2];
+        pid_t pids[num_files];
+
+        for (int i = 0; i < num_files; i++) {
+            if (pipe(pipes[i]) == -1) {
+                perror("pipe");
+                exit(1);
+            }
+
+            pid_t pid = fork();
+            if (pid == 0) {
+                close(pipes[i][0]);
+                dup2(pipes[i][1], STDOUT_FILENO);
+                close(pipes[i][1]); 
+                word_count_list_t child_word_counts;
+                init_words(&child_word_counts);
+
+                FILE *infile = fopen(argv[i + 1], "r");
+                if (infile == NULL) {
+                    perror("fopen");
+                    exit(1);
+                }
+
+                count_words(&child_word_counts, infile);
+                fclose(infile);
+
+                fprint_words(&child_word_counts, stdout); 
+                exit(0);
+            } else {
+                // parent process
+                pids[i] = pid;
+                close(pipes[i][1]);
+            }
+        }
+
+        for (int i = 0; i < num_files; i++) {
+            FILE *stream = fdopen(pipes[i][0], "r");
+            if (!stream) {
+                perror("fdopen");
+                exit(1);
+            }
+
+            merge_counts(&word_counts, stream);
+            fclose(stream);
+        }
+
+        for (int i = 0; i < num_files; i++) {
+            int status;
+            waitpid(pids[i], &status, 0);
+        }
     }
 
     /* Output final result of all process' work. */

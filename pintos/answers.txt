@@ -1,0 +1,211 @@
+1. 0xc0000008
+2. 0x8048777
+3. It was in line 7 <_start>:
+08048771 <_start>:
+ 8048771:	55                   	push   %ebp
+ 8048772:	89 e5                	mov    %esp,%ebp
+ 8048774:	83 ec 18             	sub    $0x18,%esp
+ 8048777:	8b 45 0c             	mov    0xc(%ebp),%eax
+ 804877a:	89 44 24 04          	mov    %eax,0x4(%esp)
+ 804877e:	8b 45 08             	mov    0x8(%ebp),%eax
+ 8048781:	89 04 24             	mov    %eax,(%esp)
+ 8048784:	e8 0b f9 ff ff       	call   8048094 <main>
+ 8048789:	89 04 24             	mov    %eax,(%esp)
+ 804878c:	e8 bd 20 00 00       	call   804a84e <exit>
+
+It crashed at 
+ mov    0xc(%ebp),%eax
+
+4. It's in lib/user/entry.c
+
+void _start(int argc, char *argv[]) {
+    exit(main(argc, argv));
+}
+
+push   %ebp --- pushes old base pointer onto the stack to save the caller's stack frame before making a new one
+mov    %esp,%ebp ---- sets up new stack base pointer
+sub $0x18,%esp --- subtracts to allocate space on the stack
+mov    0xc(%ebp),%eax --- loads argv from the stack into eax
+%eax,0x4(%esp) --- moves argv from eax into the stack as an arg for main
+0x8(%ebp),%eax --- loads argc from stack to eax
+%eax,(%esp) --- loads argc from eax to stack as first arg to main
+call   8048094 <main> --- call to main
+%eax,(%esp) --- moves main return value to first arg on stack
+call   804a84e <exit> --- calls exit() with main return value as first argument
+
+5. 
+The assembly assumes _start was called via a call instruction, so it sets up a new stack frame with
+push %ebp. It tries to read argc and argv from the stack with a fixed offset from the base pointer, but since the kernel 
+didn’t allocate this space on the stack, this is an invalid memory access.
+
+6. 
+(gdb) print thread_current()
+$2 = (struct thread *) 0xc000e000
+name is "main"
+
+the other thread present is "idle"
+
+{tid = 1,
+  status = THREAD_RUNNING,
+  name = "main", '\000' <repeats 11 times>,
+  stack = 0xc000edbc "\006N\002\300\001",
+  priority = 31, allelem = {
+    prev = 0xc0038cbc <all_list>,
+    next = 0xc0104020}, elem = {
+    prev = 0xc0038cac <ready_list>,
+    next = 0xc0038cb4 <ready_list+8>},
+  pagedir = 0x0, magic = 3446325067}
+pintos-debug: dumplist #1: 0xc0104000 {tid = 2,
+  status = THREAD_BLOCKED,
+  name = "idle", '\000' <repeats 11 times>,
+  stack = 0xc0104f14 "", priority = 0, allelem = {
+    prev = 0xc000e020,
+    next = 0xc0038cc4 <all_list+8>}, elem = {
+    prev = 0xc0038cac <ready_list>,
+    next = 0xc0038cb4 <ready_list+8>},
+  pagedir = 0x0, magic = 3446325067}
+
+7. 
+#0  process_execute (file_name=0xc0007d50 "do-nothing") at ../../userprog/process.c:36
+#1  0xc00208cc in run_task (argv=0xc0038bac <argv+12>) at ../../threads/init.c:272
+#2  0xc00209c9 in run_actions (argv=0xc0038bac <argv+12>) at ../../threads/init.c:320
+#3  0xc002041c in main () at ../../threads/init.c:131
+
+#0:    sema_init(&temporary, 0);
+#1:    process_wait(process_execute(task));
+#2:    a->function(argv);
+#3:    run_actions(argv);
+
+8. 
+The thread running start_process:
+  name = "do-nothing\000\000\000\000\000",
+  stack = 0xc010afd4 ""
+
+
+All threads:
+tid = 1,
+  status = THREAD_BLOCKED,
+  name = "main", '\000' <repeats 11 times>,
+  stack = 0xc000ee7c "",
+  priority = 31,
+
+tid = 2,
+  status = THREAD_BLOCKED,
+  name = "idle", '\000' <repeats 11 times>,
+  stack = 0xc0104f14 "",
+
+tid = 3,
+  status = THREAD_RUNNING,
+  name = "do-nothing\000\000\000\000\000",
+  stack = 0xc010afd4 "",
+  priority = 31,
+
+
+9. The thread running start_process is created with 
+tid = thread_create(file_name, PRI_DEFAULT, start_process, fn_copy);
+
+10. 
+$10 = {
+  edi = 0x0,
+  esi = 0x0,
+  ebp = 0x0,
+  esp_dummy = 0x0,
+  ebx = 0x0,
+  edx = 0x0,
+  ecx = 0x0,
+  eax = 0x0,
+  gs = 0x23,
+  fs = 0x23,
+  es = 0x23,
+  ds = 0x23,
+  vec_no = 0x0,
+  error_code = 0x0,
+  frame_pointer = 0x0,
+   ip = 0x8048771,
+  cs = 0x1b,
+  vec_no = 0x0,
+  error_code = 0x0,
+  frame_pointer = 0x0,
+   ip = 0x8048771,
+  eflags = 0x202,
+  esp = 0xc0000000,
+  ss = 0x23,
+   cs = 0x1b,
+}
+
+
+11. The processor switches from kernel mode to user mode when executing iret because the values on the
+ stack prepared in the struct intr_frame include a code segment selector (CS) and stack segment (SS)
+  with a privilege level of 3. The iret instruction pops these values and performs a privilege level 
+  switch as required by x86. This allows execution to resume in user space at the 
+  specified EIP and ESP.
+
+12. 
+eax            0x0                 0
+ecx            0x0                 0
+edx            0x0                 0
+ebx            0x0                 0
+esp            0xc0000000          0xc0000000
+ebp            0x0                 0x0
+esi            0x0                 0
+edi            0x0                 0
+eip            0x8048771           0x8048771
+eflags         0x202               [ IF ]
+cs             0x1b                27
+ss             0x23                35
+ds             0x23                35
+es             0x23                35
+fs             0x23                35
+gs             0x23                35
+
+They are the same as the print out of if_, which means the user mode state was preserved.
+
+13. 
+#0  _start (argc=-268370093, argv=0xf000ff53) at ../../lib/user/entry.c:7
+#1  0xf000ff53 in ?? ()
+
+14. 
+I added:
+if_.esp -= 32 
+to allocate space at the top of the stack so the offsets to the stack pointer point to a safe, valid addresses that are mapped.
+
+15. 
+0xbfffff8c:     0x00000001      0x0000006f
+
+16.
+The top two words on the user stack in the previous question are now the args to the syscall.
+(gdb) print/x $args[0]
+$6 = 0x1
+(gdb) print/x $args[1]
+$7 = 0x6f
+
+17.
+The purpose of this temp semaphore is it causes process_wait() in the parent to wait until the child process exits. 
+The semaphore blocks the parent until the child calls sema_up at the end of process_exit. The 
+corresponding sema_down(&temporary); call is in process_wait(), line 91 of process.c.
+
+18.
+Current thread at process_wait breakpoint:
+Name: "main", stack address: 0xc000ee7c
+{tid = 1, status = THREAD_RUNNING, name = "main", '\000' <repeats 11 times>, stack = 0xc000ee7c ""..}
+
+All threads:
+{tid = 1, status = THREAD_RUNNING, name = "main", '\000' <repeats 11 times>, stack = 0xc000ee7c "",
+  priority = 31, allelem = {prev = 0xc0038cbc <all_list>, next = 0xc0104020}, elem = {_list>, next = 0xc0038cb4 <ready_list+8>},
+ pagedir = 0x0, magic = 3446325067}
+
+{tid = 2, status = THREAD_BLOCKED,0038cac <ready_list>, 3446325067}
+    name = "idle", '\000' <repeats 11 times>, stack = 0xc0104f14 "", priority = 0, allelem = {ack = 0xc000ee7c "", priority = 31, allelem = {
+    prev = 0xc000e020, next = 0xc0038cc4 <all_list+8>}, elem = {prev = 0xc0038cac <ready_list>,446325067}
+
+
+19. The stack is initialized in:
+t->stack = (uint8_t *) t + PGSIZE; in init_thread,
+
+It's written to in alloc_frame:
+ t->stack -= size; 
+alloc_frame is where the kernel pushes stack frames, so each call to it adjusts t->stack.
+
+20. It is safe because a thread can't be in the ready and waiter lists at the same time. The status
+must be one or the other (blocked or ready), so there won't be synchronization issues. 
+allelem is separate because a thread is always in all_list, regardless of its current state. 
