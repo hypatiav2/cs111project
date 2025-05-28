@@ -34,5 +34,7 @@ static void syscall_handler(struct intr_frame *f UNUSED) {
         char* buf = args[2];
         unsigned size = args[3];
         putbuf(buf, size);
+    } else if (args[0] == SYS_HALT) {
+        shutdown_power_off();
     }
 }
