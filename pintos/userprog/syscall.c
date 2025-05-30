@@ -5,6 +5,7 @@
 
 #include "threads/interrupt.h"
 #include "threads/thread.h"
+#include "filesys/filesys.h"
 
 static void syscall_handler(struct intr_frame *);
 
@@ -36,5 +37,10 @@ static void syscall_handler(struct intr_frame *f UNUSED) {
         putbuf(buf, size);
     } else if (args[0] == SYS_HALT) {
         shutdown_power_off();
+    } else if (args[0] == SYS_CREATE)
+    {
+        const char* file = args[1];
+        unsigned initial_size = args[2];
+        f->eax = filesys_create(file, initial_size);
     }
 }
