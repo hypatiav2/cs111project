@@ -82,6 +82,20 @@ typedef int tid_t;
    only because they are mutually exclusive: only a thread in the
    ready state is on the run queue, whereas only a thread in the
    blocked state is on a semaphore wait list. */
+
+
+struct child_info {
+      tid_t tid; /* Child thread identifier. */
+      int exit_status; /* Exit status of the child thread. */
+      bool is_waited; /* True if parent has called wait on this child. */
+      bool has_exited; /* True if child has exited. */
+      bool load_success; /* True if child process loaded successfully. */
+      struct semaphore sema_load; /* Semaphore to signal load completion. */
+      struct semaphore sema_wait; /* Semaphore to signal wait completion. */
+      struct list_elem elem; /* List element for child list. */
+};
+
+
 struct thread {
     /* Owned by thread.c. */
     tid_t tid; /* Thread identifier. */
@@ -94,9 +108,20 @@ struct thread {
     /* Shared between thread.c and synch.c. */
     struct list_elem elem; /* List element. */
 
+
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir; /* Page directory. */
+
+   // list of all immediate children of this thread; each entry is a pointer to a struct child_info.
+   struct list children_list;
+   // if thread is a child, this will point back to parent info; NULL otherwise.
+   struct child_info *my_info; 
+   // if parent dies before child, mark here
+   bool parent_died;
+   // open file handle for deny-write executable
+   struct file *executable_file;
+
 #endif
 
     /* Owned by thread.c. */
@@ -138,5 +163,7 @@ int thread_get_nice(void);
 void thread_set_nice(int);
 int thread_get_recent_cpu(void);
 int thread_get_load_avg(void);
+struct thread *get_thread_by_tid(tid_t target_tid);
+
 
 #endif /* threads/thread.h */

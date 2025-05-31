@@ -21,8 +21,11 @@
 #include "userprog/pagedir.h"
 #include "userprog/tss.h"
 
+// used to make the parent block until the child signals that it has executed
 static struct semaphore temporary;
 static thread_func start_process NO_RETURN;
+// this is getting executable off of the disk, loading segments into memory, setting up the user stack, and returning
+// the entry point and stack pointer to the caller
 static bool load(const char *cmdline, void (**eip)(void), void **esp);
 
 /* Starts a new thread running a user program loaded from
@@ -34,13 +37,27 @@ tid_t process_execute(const char *file_name) {
     char *fn_copy;
     tid_t tid;
     
-    sema_init(&temporary, 0);
+    //sema_init(&temporary, 0);
     /* Make a copy of FILE_NAME.
     Otherwise there's a race between the caller and load(). */
     fn_copy = palloc_get_page(0);
     if (fn_copy == NULL)
         return TID_ERROR;
     strlcpy(fn_copy, file_name, PGSIZE);
+
+    struct child_info *ci = malloc(sizeof *ci);
+    if (!ci) {
+        palloc_free_page(fn_copy);
+        return TID_ERROR;
+    }
+    ci->tid              = TID_ERROR;   
+    ci->exit_status        = -1;
+    ci->has_exited       = false;
+    ci->is_waited  = false;
+    ci->load_success     = false;
+    sema_init(&ci->sema_load, 0);
+    sema_init(&ci->sema_wait, 0);
+
     char buf[256];
     strlcpy(buf, file_name, sizeof(buf));
 
@@ -49,8 +66,21 @@ tid_t process_execute(const char *file_name) {
 
     /* Create a new thread to execute FILE_NAME. */
     tid = thread_create(file_name_, PRI_DEFAULT, start_process, fn_copy);
-    if (tid == TID_ERROR)
+    if (tid == TID_ERROR){
+        free(ci);
         palloc_free_page(fn_copy);
+        return TID_ERROR;
+    }
+    
+    // link new child info into parent's children list and store ci->tid so process_wait can match.
+    ci->tid = tid;
+    list_push_back(&thread_current()->children_list, &ci->elem);
+
+    // save child info information
+    struct thread *child_t = get_thread_by_tid(tid);
+    child_t->my_info = ci;
+
+    // return child's TID
     return tid;
 }
 
@@ -68,6 +98,19 @@ static void start_process(void *file_name_) {
     if_.eflags = FLAG_IF | FLAG_MBS;
     success = load(file_name, &if_.eip, &if_.esp);
     //if_.esp -= 16;
+
+    // if (success) {
+    //     printf("DEBUG: Child %s loaded successfully in tid=%d.\n",
+    //            thread_current()->name, thread_current()->tid);
+    // } else {
+    //     printf("DEBUG: Child %s failed to load in tid=%d.\n",
+    //            thread_current()->name, thread_current()->tid);
+    // }
+    struct thread *cur = thread_current();
+    if (cur->my_info) {
+        cur->my_info->load_success = success; // set load success status
+        sema_up(&cur->my_info->sema_load); // signal parent that load is complete
+    }
 
     /* If load failed, quit. */
     palloc_free_page(file_name);
@@ -93,15 +136,54 @@ static void start_process(void *file_name_) {
 
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
-int process_wait(tid_t child_tid UNUSED) {
-    sema_down(&temporary);
-    return 0;
+
+// implement the wait functionality here and then call process_wait in the wait syscall
+int process_wait(tid_t child_tid) {
+    // sema_down(&temporary);
+    // return 0;
+
+    struct thread *cur = thread_current();
+    struct child_info *child = NULL;
+    struct list_elem *e;
+
+    // find matching child_info in cur ->children_list
+    for(e = list_begin(&cur->children_list); e != list_end(&cur->children_list); e = list_next(e)) {
+        struct child_info *c = list_entry(e, struct child_info, elem);
+        if (c->tid == child_tid) {
+            child =c;
+            break;
+        }
+    }
+    if(child == NULL){
+        //printf("DEBUG: process_wait() called for invalid child tid=%d.\n", child_tid);
+        return -1; // invalid tid
+    }
+
+    if(child ->is_waited){
+        //printf("DEBUG: process_wait() called for child tid=%d that has already been waited on.\n", child_tid);
+        return -1; // already waited on
+    }
+
+    if(!child -> has_exited) {
+        // wait for child to exit
+        sema_down(&child->sema_wait);
+    }
+
+    child->is_waited = true; // mark as waited on
+    int status = child->exit_status; // get exit status
+    list_remove(&child->elem); // remove from parent's children list
+    free(child); // free child_info struct
+
+    return status; // return exit status
 }
 
 /* Free the current process's resources. */
 void process_exit(void) {
     struct thread *cur = thread_current();
     uint32_t *pd;
+
+    /*printf("DEBUG: process_exit() running for tid=%d (name=%s).\n",
+           cur->tid, cur->name); */
 
     /* Destroy the current process's page directory and switch back
        to the kernel-only page directory. */
@@ -118,7 +200,20 @@ void process_exit(void) {
         pagedir_activate(NULL);
         pagedir_destroy(pd);
     }
-    sema_up(&temporary);
+    //sema_up(&temporary);
+
+    // frees any child_info structs that were never waited on (zombie entries)
+    #ifdef USERPROG
+    {
+        struct list_elem *e, *next;
+        for (e = list_begin(&cur->children_list); e != list_end(&cur->children_list); e = next) {
+            next = list_next(e);
+            struct child_info *child = list_entry(e, struct child_info, elem);
+            list_remove(&child -> elem);
+            free(child);
+        }
+    }
+    #endif
 }
 
 /* Sets up the CPU for running user code in the current
@@ -233,6 +328,10 @@ bool load(const char *file_name, void (**eip)(void), void **esp) {
         goto done;
     }
 
+    // ROX: prevent anyone else from writing to the executable file
+    file_deny_write(file);
+    t -> executable_file = file; 
+
     /* Read and verify executable header. */
     if (file_read(file, &ehdr, sizeof ehdr) != sizeof ehdr ||
         memcmp(ehdr.e_ident, "\177ELF\1\1\1", 7) || ehdr.e_type != 2 ||
@@ -305,7 +404,13 @@ bool load(const char *file_name, void (**eip)(void), void **esp) {
 
 done:
     /* We arrive here whether the load is successful or not. */
-    file_close(file);
+    if(!success){
+        if(file != NULL) {
+            file_allow_write(file);
+            file_close(file);
+        }
+    }
+    // file_close(file);
     return success;
 }
 
