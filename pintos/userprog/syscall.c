@@ -9,6 +9,7 @@
 #include "filesys/filesys.h"
 #include "filesys/file.h"
 #include "lib/kernel/list.h"
+#include "userprog/process.h"
 
 typedef struct ofd {
     struct file *file;
@@ -56,6 +57,22 @@ static void syscall_handler(struct intr_frame *f UNUSED) {
     if (args[0] == SYS_EXIT) {
         f->eax = args[1];
         printf("%s: exit(%d)\n", thread_current()->name, args[1]);
+
+        struct child_info *ci = thread_current()-> my_info;
+        if(ci!= NULL){
+            ci->has_exited = true; // mark as exited
+            ci->exit_status = args[1]; // set exit status
+            sema_up(&ci->sema_wait); // signal parent that child has exited
+        }
+
+        if(thread_current()->executable_file != NULL) {
+            file_allow_write(thread_current()->executable_file);
+            file_close(thread_current()->executable_file);
+            thread_current()->executable_file = NULL;
+        }
+
+
+        process_exit();
         thread_exit();
     } else if (args[0] == SYS_INCREMENT) {
         f->eax = args[1] + 1;
@@ -130,5 +147,11 @@ static void syscall_handler(struct intr_frame *f UNUSED) {
         ofd_t *ofd = get_ofd(fd);
         if(ofd != NULL) f->eax = file_tell(ofd->file);
         else f->eax = -1;
-    } 
+    } else if (args[0] == SYS_WAIT) {
+        tid_t pid = (tid_t) args[1];
+        f ->eax = process_wait(pid);
+    } else if (args[0] == SYS_EXEC) {
+        const char *cmd_line = (const char *) args[1];
+        f->eax = process_execute(cmd_line);
+    }
 }

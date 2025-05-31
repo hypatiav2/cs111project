@@ -30,6 +30,20 @@ static struct list ready_list;
    when they are first scheduled and removed when they exit. */
 static struct list all_list;
 
+// returns the struct thread * whose tid == target_tid
+struct thread *
+get_thread_by_tid(tid_t target_tid) {
+    struct list_elem *e;
+
+    for (e = list_begin(&all_list); e != list_end(&all_list);
+         e = list_next(e)) {
+        struct thread *t = list_entry(e, struct thread, allelem);
+        if (t->tid == target_tid)
+            return t;
+    }
+    return NULL; /* Not found. */
+}
+
 /* Idle thread. */
 static struct thread *idle_thread;
 
@@ -414,6 +428,13 @@ static void init_thread(struct thread *t, const char *name, int priority) {
     t->stack = (uint8_t *) t + PGSIZE;
     t->priority = priority;
     t->magic = THREAD_MAGIC;
+
+    #ifdef USERPROG
+        list_init(&t->children_list);
+        t->my_info = NULL; /* This thread is not a child of any thread. */
+        t->parent_died = false; /* Parent has not died yet. */
+        t->executable_file = NULL; /* No executable file opened yet. */
+    #endif
 
     old_level = intr_disable();
     list_push_back(&all_list, &t->allelem);
