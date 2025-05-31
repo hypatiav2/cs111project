@@ -152,6 +152,22 @@ static void syscall_handler(struct intr_frame *f UNUSED) {
         f ->eax = process_wait(pid);
     } else if (args[0] == SYS_EXEC) {
         const char *cmd_line = (const char *) args[1];
-        f->eax = process_execute(cmd_line);
+        // start child thread
+        tid_t child_tid = process_execute(cmd_line);
+        if (child_tid == TID_ERROR) {
+            f->eax = -1; // error in process_execute
+            return;
+        }
+        struct thread *child_thread = get_thread_by_tid(child_tid);
+        struct child_info *ci = child_thread->my_info;
+
+        sema_down(&ci->sema_load); // wait for child to load
+        if (!ci->load_success) {
+            f->eax = -1; // child failed to load
+        } else {
+            f->eax = child_tid; // return child's tid
+        }
+
+
     }
 }
