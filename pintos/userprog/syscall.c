@@ -14,6 +14,7 @@
 typedef struct ofd {
     struct file *file;
     int fd;
+    tid_t pid;
     struct list_elem elem;
 } ofd_t;
 
@@ -95,6 +96,7 @@ static void syscall_handler(struct intr_frame *f UNUSED) {
             ofd_t* ofd = malloc(sizeof(ofd_t));
             ofd->fd = fd;
             ofd->file = file;
+            ofd->pid = thread_current()->tid;
 
             list_push_back(&ofd_table, &ofd->elem);
             f->eax = fd;
@@ -103,14 +105,14 @@ static void syscall_handler(struct intr_frame *f UNUSED) {
         int fd = args[1];
         f->eax = -1;
         ofd_t *ofd = get_ofd(fd);
-        if(ofd != NULL) f->eax = file_length(ofd->file);
+        if(ofd != NULL && ofd->pid == thread_current()->tid) f->eax = file_length(ofd->file);
     } else if (args[0] == SYS_READ) {
         int fd = args[1];
         void *buffer = (void*)args[2];
         unsigned size = args[3];
         ofd_t *ofd = get_ofd(fd);
 
-        if(fd >= 2 && ofd != NULL) // not stdin/stdout
+        if(fd >= 2 && ofd != NULL && ofd->pid == thread_current()->tid) // not stdin/stdout
         {
             off_t bytes_read = file_read(ofd->file, buffer, size);
             f->eax = bytes_read;
@@ -118,7 +120,7 @@ static void syscall_handler(struct intr_frame *f UNUSED) {
     } else if (args[0] == SYS_CLOSE) {
         int fd = args[1];
         ofd_t *ofd = get_ofd(fd);
-        if(ofd != NULL) 
+        if(ofd != NULL && ofd->pid == thread_current()->tid) 
         {
             list_remove(&ofd->elem);
             file_close(ofd->file);
@@ -132,7 +134,7 @@ static void syscall_handler(struct intr_frame *f UNUSED) {
 
         if(fd == 1)
             putbuf(buf, size);
-        else if(fd >= 2 && ofd != NULL)
+        else if(fd >= 2 && ofd != NULL && ofd->pid == thread_current()->tid)
         {
             off_t bytes_written = file_write(ofd->file, buf, size);
             f->eax = bytes_written;
@@ -141,11 +143,11 @@ static void syscall_handler(struct intr_frame *f UNUSED) {
         int fd = args[1];
         unsigned position = args[2];
         ofd_t *ofd = get_ofd(fd);
-        if(ofd != NULL) file_seek(ofd->file, position);
+        if(ofd != NULL && ofd->pid == thread_current()->tid) file_seek(ofd->file, position);
     } else if (args[0] == SYS_TELL) {
         int fd = args[1];
         ofd_t *ofd = get_ofd(fd);
-        if(ofd != NULL) f->eax = file_tell(ofd->file);
+        if(ofd != NULL && ofd->pid == thread_current()->tid) f->eax = file_tell(ofd->file);
         else f->eax = -1;
     } else if (args[0] == SYS_WAIT) {
         tid_t pid = (tid_t) args[1];
