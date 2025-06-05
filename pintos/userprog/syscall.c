@@ -240,9 +240,11 @@ static void syscall_handler(struct intr_frame *f UNUSED) {
         sema_down(&ci->sema_load);
 
         if (!ci->load_success) {
+            process_wait(child_tid);
             f->eax = -1;
         } else {
             f->eax = child_tid;
         }
+        palloc_free_page(cmd_copy);
     }
 }

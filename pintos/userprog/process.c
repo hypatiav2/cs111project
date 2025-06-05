@@ -115,8 +115,18 @@ static void start_process(void *file_name_) {
 
     /* If load failed, quit. */
     palloc_free_page(file_name);
-    if (!success)
-        thread_exit();
+
+    /* If load failed, terminate cleanly */
+    if (!success) {
+
+        if (cur->my_info) {
+            cur->my_info->exit_status = -1;
+            cur->my_info->has_exited = true;
+            sema_up(&cur->my_info->sema_wait);
+        }
+        thread_exit(); 
+        NOT_REACHED();
+    }
 
     /* Start the user process by simulating a return from an
        interrupt, implemented by intr_exit (in
