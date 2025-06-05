@@ -212,6 +212,9 @@ static void syscall_handler(struct intr_frame *f UNUSED) {
         tid_t pid = (tid_t) args[1];
         f ->eax = process_wait(pid);
     } else if (args[0] == SYS_EXEC) {
+        if (!validate_user_buffer(args, sizeof(uint32_t) * 2)) {
+        process_exit_with_code(-1);
+        }
         const char *user_ptr = (const char *) args[1];
 
         if (!validate_user_string(user_ptr)) {
