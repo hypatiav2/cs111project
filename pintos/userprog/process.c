@@ -34,9 +34,9 @@ static bool load(const char *cmdline, void (**eip)(void), void **esp);
    thread id, or TID_ERROR if the thread cannot be created. */
 
 tid_t process_execute(const char *file_name) {
+
     char *fn_copy;
     tid_t tid;
-    
     //sema_init(&temporary, 0);
     /* Make a copy of FILE_NAME.
     Otherwise there's a race between the caller and load(). */
@@ -97,6 +97,7 @@ static void start_process(void *file_name_) {
     if_.cs = SEL_UCSEG;
     if_.eflags = FLAG_IF | FLAG_MBS;
     success = load(file_name, &if_.eip, &if_.esp);
+    
     //if_.esp -= 16;
 
     // if (success) {
@@ -620,4 +621,24 @@ static bool install_page(void *upage, void *kpage, bool writable) {
        address, then map our page there. */
     return (pagedir_get_page(t->pagedir, upage) == NULL &&
             pagedir_set_page(t->pagedir, upage, kpage, writable));
+}
+
+
+void process_exit_with_code(int status) {
+    printf("%s: exit(%d)\n", thread_current()->name, status);
+
+    struct child_info *ci = thread_current()->my_info;
+    if(ci != NULL) {
+        ci->has_exited = true;
+        ci->exit_status = status;
+        sema_up(&ci->sema_wait);
+    }
+
+    if (thread_current()->executable_file != NULL) {
+        file_allow_write(thread_current()->executable_file);
+        file_close(thread_current()->executable_file);
+        thread_current()->executable_file = NULL;
+    }
+
+    thread_exit();
 }

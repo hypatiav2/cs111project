@@ -10,6 +10,41 @@
 #include "filesys/file.h"
 #include "lib/kernel/list.h"
 #include "userprog/process.h"
+#include "threads/vaddr.h"
+#include "userprog/pagedir.h"
+
+static bool validate_user_buffer(const void *ptr, size_t size);
+static bool validate_user_string(const char *str);
+
+static bool validate_user_buffer(const void *ptr, size_t size) {
+    if (size == 0) return true;
+
+    uint8_t *start = (uint8_t *) ptr;
+    uint8_t *end = start + size;
+
+    for (uint8_t *p = start; p < end; p = (uint8_t *)((uintptr_t)p + PGSIZE)) {
+        if (!is_user_vaddr(p) || pagedir_get_page(thread_current()->pagedir, p) == NULL) {
+            return false;
+        }
+    }
+
+    if (!is_user_vaddr(end - 1) || pagedir_get_page(thread_current()->pagedir, end - 1) == NULL) {
+        return false;
+    }
+
+    return true;
+}
+
+bool validate_user_string(const char *str) {
+    while (true) {
+        if (!is_user_vaddr(str) || pagedir_get_page(thread_current()->pagedir, str) == NULL)
+            return false;
+        if (*str == '\0')
+            break;
+        str++;
+    }
+    return true;
+}
 
 typedef struct ofd {
     struct file *file;
@@ -44,6 +79,10 @@ void syscall_init(void) {
 }
 
 static void syscall_handler(struct intr_frame *f UNUSED) {
+
+    if (!validate_user_buffer(f->esp, sizeof(uint32_t))) {
+        process_exit_with_code(-1);
+    }
     uint32_t *args = ((uint32_t *) f->esp);
 
     /*
@@ -56,6 +95,11 @@ static void syscall_handler(struct intr_frame *f UNUSED) {
     /* printf("System call number: %d\n", args[0]); */
 
     if (args[0] == SYS_EXIT) {
+
+        if (!validate_user_buffer(args, sizeof(uint32_t) * 2)) {
+            process_exit_with_code(-1);
+        }
+
         f->eax = args[1];
         printf("%s: exit(%d)\n", thread_current()->name, args[1]);
 
@@ -78,13 +122,22 @@ static void syscall_handler(struct intr_frame *f UNUSED) {
     } else if (args[0] == SYS_INCREMENT) {
         f->eax = args[1] + 1;
     } else if (args[0] == SYS_CREATE) {
+        if (!validate_user_string((const char *)args[1])) {
+            process_exit_with_code(-1);
+        }
         const char* file_name = (const char*)args[1];
         unsigned initial_size = args[2];
         f->eax = filesys_create(file_name, initial_size);
     } else if (args[0] == SYS_REMOVE) {
+        if (!validate_user_string((const char *)args[1])) {
+            process_exit_with_code(-1);
+        }
         const char* file_name = (const char*)args[1];
         f->eax = filesys_remove(file_name);
     } else if (args[0] == SYS_OPEN) {
+        if (!validate_user_string((const char *)args[1])) {
+            process_exit_with_code(-1);
+        }
         const char* file_name = (const char*)args[1];
         struct file *file = filesys_open(file_name);
 
@@ -107,6 +160,9 @@ static void syscall_handler(struct intr_frame *f UNUSED) {
         ofd_t *ofd = get_ofd(fd);
         if(ofd != NULL && ofd->pid == thread_current()->tid) f->eax = file_length(ofd->file);
     } else if (args[0] == SYS_READ) {
+        if (!validate_user_buffer((void *)args[2], (size_t)args[3])) {
+            process_exit_with_code(-1);
+        }
         int fd = args[1];
         void *buffer = (void*)args[2];
         unsigned size = args[3];
@@ -127,6 +183,9 @@ static void syscall_handler(struct intr_frame *f UNUSED) {
             free(ofd);
         }
     } else if (args[0] == SYS_WRITE) {
+        if (!validate_user_buffer((void *)args[2], (size_t)args[3])) {
+            process_exit_with_code(-1);
+        }
         int fd = args[1];
         const void* buf = (const void*)args[2];
         unsigned size = args[3];
@@ -153,23 +212,34 @@ static void syscall_handler(struct intr_frame *f UNUSED) {
         tid_t pid = (tid_t) args[1];
         f ->eax = process_wait(pid);
     } else if (args[0] == SYS_EXEC) {
-        const char *cmd_line = (const char *) args[1];
-        // start child thread
-        tid_t child_tid = process_execute(cmd_line);
+        const char *user_ptr = (const char *) args[1];
+
+        if (!validate_user_string(user_ptr)) {
+            process_exit_with_code(-1);
+        }
+
+        char *cmd_copy = palloc_get_page(0);
+        if (cmd_copy == NULL) {
+            process_exit_with_code(-1);
+        }
+
+        strlcpy(cmd_copy, user_ptr, PGSIZE);
+
+        tid_t child_tid = process_execute(cmd_copy);
         if (child_tid == TID_ERROR) {
-            f->eax = -1; // error in process_execute
+            palloc_free_page(cmd_copy);  // cleanup on failure
+            f->eax = -1;
             return;
         }
+
         struct thread *child_thread = get_thread_by_tid(child_tid);
         struct child_info *ci = child_thread->my_info;
+        sema_down(&ci->sema_load);
 
-        sema_down(&ci->sema_load); // wait for child to load
         if (!ci->load_success) {
-            f->eax = -1; // child failed to load
+            f->eax = -1;
         } else {
-            f->eax = child_tid; // return child's tid
+            f->eax = child_tid;
         }
-
-
     }
 }
