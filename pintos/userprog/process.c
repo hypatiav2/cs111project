@@ -193,6 +193,8 @@ void process_exit(void) {
     struct thread *cur = thread_current();
     uint32_t *pd;
 
+    close_all_fds_for_current();
+
     /*printf("DEBUG: process_exit() running for tid=%d (name=%s).\n",
            cur->tid, cur->name); */
 

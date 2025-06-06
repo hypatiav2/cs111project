@@ -71,6 +71,27 @@ ofd_t *get_ofd(int fd)
     return NULL;
 }
 
+void close_all_fds_for_current(void) {
+    struct thread *cur = thread_current();
+    tid_t self_tid = cur->tid;
+
+    // go through list of file descriptors
+    struct list_elem *e = list_begin(&ofd_table);
+    while (e != list_end(&ofd_table)) {
+        ofd_t *ofd = list_entry(e, ofd_t, elem);
+
+        // move to next element before we potentially remove the current one
+        e = list_next(e);
+
+        if (ofd->pid == self_tid) {
+            file_close(ofd->file);
+            list_remove(&ofd->elem);
+            free(ofd);
+        }
+    }
+}
+
+
 static void syscall_handler(struct intr_frame *);
 
 void syscall_init(void) {
